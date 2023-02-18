@@ -59,3 +59,55 @@
   总结，[unity官方推荐纹理压缩格式以及对应平台](https://docs.unity3d.com/Manual/class-TextureImporterOverride.html) 
 
   ![image](https://raw.githubusercontent.com/CHy-KK/Images/main/TEXSummary.png)
+
+* 关于SRP
+  * CBUFFER：如果在frag或vert shader中使用了未被CBUFFER包裹的 且 在别的shader中也存在的同名输入变量，那么这个shader将会SRP batcher not compatible，后续在看SRP时可以探究一下
+
+* 如何使用主纹理取到自定义渐变颜色？可以根据主纹理采样得到的rgb计算出一个值（任意，比如算luminance）再对渐变纹理进行采样
+
+
+* shader里应尽量避免产生判断，所以一些简单的数值比较等，可以用clip()、step()等函数转换为正负比较进而转换为0、1数值然后相乘
+
+* [shader properties标签](https://docs.unity3d.com/ScriptReference/MaterialPropertyDrawer.html)，比如自定义keyword、enum等
+
+* 采样环形纹理时要把uv坐标转换为极坐标，x作为方向角，y作为距离
+  ```
+  x0 = 0.5 + cos(360 * x) * y / 2;
+  y0 = 0.5 + sin(360 * x) * y / 2;
+  ```
+  <image src="https://github.com/CHy-KK/Images/blob/main/GroundCrack01_v2.png?raw=true" width="50%"><image src="https://github.com/CHy-KK/Images/blob/main/circlemodel.png?raw=true" width="50%">
+
+* 不能随便clip，否则被丢弃的像素会保留之前的值，导致频幕上出现暂留的脏迹，最好是就直接置0了。同时使用clip做深度判断时会产生谜之漏光，用if就不会……
+* 体积光方案：
+  * sunshaft（径向模糊）：
+    1. 参数设置问题，会产生严重的抖动
+    2. urp下主光源方向需要手动设置，不然只有directional Light
+    3. 由于全局统一的采样次数和步长，所以体积光线都是统一长度，也就是一些近处遮挡的效果会失效，会看上去有点怪
+    4. 如果主光源坐标设置过低可能会让光线末端产生弯曲，我认为可以理解为a束光线采样到了相邻b束光线的像素点导致不该亮的地方亮了，所以可以把主光源坐标设置高一点
+    5. 做步进采样的时候记得要用光线方向除以采样次数，这样的参数设置可以减少锯齿
+  
+  * 某不记得的方法：
+
+
+  * 特效方案：
+    1. 能够实现动态体积光
+
+* 在使用Camera.main.projectionMatrix时，要使用GL.GetGPUProjectionMatrix函数进行一次转换，因为unity内的P矩阵是按照opengl的规则进行计算，但是在某些平台上必须稍微变换以符合原生api要求。https://docs.unity3d.com/cn/2017.1/ScriptReference/GL.GetGPUProjectionMatrix.html
+
+* unity的剪裁空间y坐标是从上到下的，而不是传统的从下开始。所以在手动从统一设备坐标ndc转换到裁剪空间CS时，要将y坐标乘以-1w
+
+* 重建世界坐标的方式有两种，一个是直接把ndc空间转到CS下再用VP矩阵转到WS，还有一种是先用近平面上的像素坐标和camera位置求得屏幕射线，然后将深度值转换为线性深度Linear01Depth(rawDepth, _ZBufferParams)，用射线方向*线性深度得到世界坐标。
+
+
+
+
+## HDRP篇
+1. System Value语义是DX10之后新增的语义绑定，所有系统值以SV前缀开头，例如SV_Target（这个是一直都有）,SV_POSITION；
+
+    SV_POSITION和POSITION用法无不同，唯一区别在于SV_POSITION一旦作为vertex shader输出语义，那么这个最终的顶点位置就被固定了，直接进入光栅化处理（不允许进入几何和细分shader？），在fragment shader中不允许修改这个值
+
+2. HDRP后处理Render函数传入的参数source和destination，传入shader的texture并不是2D格式，而是2D_X格式，这是因为HDRP支持XR，导致默认传入的source不是单纯的2D，而是2D_X，所以使用之前的Blit函数会出现问题，因为其需要的传入参数是Texture2D，所以需要使用HDUtils.BlitCameraTexture用一个pass将source格式转为正常的Textuer2D格式（其实HDRP官方给出的范例就是），然后再进行多pass的渲染。注意使用HDUtils.BlitCameraTexture要用对应的传入纹理名称_BlitTexture。后续可以直接使用cmd.Blit，记得设置传入纹理参数为_MainTex
+   
+3. 场景做出更改之后记得重新烘焙所有的refelection probe
+
+4. 好像直接使用input.getkeydown非常非常消耗性能

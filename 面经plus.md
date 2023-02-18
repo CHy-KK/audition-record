@@ -73,7 +73,11 @@
   
 * __是否每一次drawcall都要重新传一次顶点数据？（VAO和VBO到底是如何将数据传给gpu的？）__
   
-  learnopengl;https://blog.csdn.net/u012169524/article/details/113383015答：不是！首先我们在渲染循环外面，就会把外存上的数据绑定到VBO中，VBO会将绑定的顶点数据发送到显卡上。我们使用glBufferData函数绑定外存的数据，该函数的最后一个参数：
+  learnopengl;
+  
+  https://blog.csdn.net/u012169524/article/details/113383015
+  
+  答：不是！首先我们在渲染循环外面，就会把外存上的数据绑定到VBO中，VBO会将绑定的顶点数据发送到显卡上。我们使用glBufferData函数绑定外存的数据，该函数的最后一个参数：
 	* GL_STATIC_DRAW ：数据不会或几乎不会改变。
 	* GL_DYNAMIC_DRAW：数据会被改变很多。
 	* GL_STREAM_DRAW ：数据每次绘制时都会改变。
@@ -145,6 +149,11 @@
 * __纹理压缩__
   
   实际上如果每次向GPU传输纹理，如果传递整张纹理数据那么数据量是非常大的。 所以我们可以应用一些硬件编码纹理压缩技术来减少纹理传递的数据量。这也是提升GPU速度的有效手段
+
+  纹理压缩格式具体请见ShaderLeraningRecord笔记
+
+  unity中纹理压缩格式可在texture的inspector窗口中可以调整，default下基本都使用不压缩方式，PC和Android端下有可选的覆盖选项，安卓端的可选压缩方式非常多，为了节约带宽；注意，如果要使用纹理压缩最好关闭mipmap，否则mipmap会出现问题
+  ![image](https://github.com/CHy-KK/Images/blob/main/textureformat.png?raw=true)
   
 * __在游戏引擎中通常采用block思想：__
   
@@ -169,6 +178,8 @@
 * __为什么mipmap可以节省带宽？__
   
   首先我们要知道，GPU会优先将读取纹理的指令排列在一起，也就是可能这条指令是读(0.1, 0.2)处纹素，第一条指令是读(0.9, 0.7)处纹素。而GPU在读取纹理时是将读取uv处周围一片纹理值全部读入L1 L2缓存(cache)，那么如果下一个读取指令的读取位置在上一条的附近，当然就可以命中cache数据。但是显然当纹理过大时比如level=0的mipmap，像上面说的两个点几乎是不可能命中cache的，也就需要重新加载一片纹素；那么当level=5或者更高(1/32倍了已经)，纹理很小的情况下，上面两个点的纹理值很可能就一次都load进L1L2缓存了，大大提高了cache命中率，减少了GPU加载纹理的次数，节省了带宽。
+
+
 
 * __当物体坐标离世界原点太大导致的浮点精度过低怎么办？__
   
@@ -207,9 +218,13 @@
 
   另外，unity在非移动平台上会将法线贴图转换为DXRT5nm格式，这个格式只有两个有效通道，因此节约了空间。（移动平台还是rgb三通道）
 
+  注意，切线空间中的up方向是z轴而不是y轴。
+  
+  切线空间的具体应用请参照geoshader艹渲染一节
+
 * __视差贴图__
   
-  相对法线贴图增加了模型各个顶点的高度信息(都是小于0的，也就是不可能在最初命中点的后面会有比该点更高的 且  能挡住该点的点），看起来会有遮挡关系。实现方式是通过根据A顶点处其高度值以及viewDir计算出一个偏移量，取偏移处顶点B的纹理值作为A顶点的纹理值。 根据这个例子可以看出来深度更第低的点会被深度高的点给"覆盖"掉，也就达到了有遮挡关系的效果。（精度较低）
+  相对法线贴图增加了模型各个顶点的高度信息(__记录的是实际高度距离建模平面的值，实际高度=1-采样值，也就是不可能在最初命中点的后面会有比该点更高的 且  能挡住该点的点，所以每次采样只需要向前查找，不会需要向后查找__），看起来会有遮挡关系。实现方式是通过根据A顶点处其高度值以及viewDir计算出一个偏移量，取偏移处顶点b的uv作为纹理采样的uv，而实际应该取的是B处的uv，可以看出来偏差其实还是挺大的，所以偏移法精度比较低。
 
   ![image](https://github.com/CHy-KK/Images/blob/main/parallaxmapping.png?raw=true)
 
@@ -225,8 +240,67 @@
   
   同时因为处理过所以经过gamma校正的值无法直接使用该值进行光照计算，要先解码（逆gamma）之后才能进行颜色相加等操作。所以一定要非常注意导入的texture到底时使用什么空间（线性 or gamma），否则会出现计算出错。同时由于gamma本质是把数值增大了，所以如果本来是在gamma空间下的值但导入后以为他是线性空间下所以没有做逆gamma的话，多次颜色相加之后会出现过曝的问题（颜色值大于1）
 
+* __GPU架构__(GPU架构及运行机制学习笔记 - 最短鹿的文章 - 知乎
+https://zhuanlan.zhihu.com/p/393485253)
+
+  层级：SPA(Streaming Processor Array) - TPC/GPC(Texture/Graphics Processor Cluster) - SM(Streaming Multiprocessor) - SP(Streaming Processor/CUDA core)
+
+  * 以下是一个SM的结构
+
+      ![image](https://github.com/CHy-KK/Images/blob/main/SM.png?raw=true)
+
+    * PolyMorph Engine：多边形引擎负责属性装配（attribute Setup）、顶点拉取(VertexFetch)、曲面细分、栅格化（这个模块可以理解专门处理顶点相关的东西）。
+    * 指令缓存（Instruction Cache）
+    * 2个Warp Schedulers：这个模块负责warp调度，一个warp由32个线程组成，warp调度器的指令通过Dispatch Units送到Core执行。warp是最小的线程调度单位，一个warp下的所有线程执行相同的指令。
+    * 指令调度单元(Dispatch Units) 负责将Warp Schedulers的指令送往Core执行
+    * 128KB Register File（寄存器）
+    * 16个LD/ST（load/store）用来加载和存储数据
+    * Core （Core，也叫流处理器Stream Processor）
+    * 4个SFU（Special function units 特殊运算单元）执行特殊数学运算（sin、cos、log等）
+    * 内部链接网络（Interconnect Network）
+    * 64KB共享缓存
+    * 全局内存缓存（Uniform Cache）
+    * 纹理读取单元(Tex)
+    * 纹理缓存（Texture Cache）
+
+  * GPU程序上会把所有线程按照网格（grid）划分，把网格划分为不同的block，每个block可能包含128-512个线程（不能太少也不能太多），GPU会将block分配到SM上，block下的线程会以warp为单位进行划分然后执行。
+
+  * 尽量少使用寄存器
+  * 每个线程有自己的本地内存，每个block有共享内存空间（访问速度接近L1 cache），每个grid会访问全局内存。每个SM有64K共享内存，由16个4字节大小的bank组成。一般来说现在的GPU是半个warp去访问这16个bank。如果不同线程访问的bank地址一致就会产生冲突，冲突时需要冲突的线程轮流访问该bank，浪费时间。（或者使用访问一次后广播该bank数据的方式降低消耗），还是要尽量避免产生冲突
 
 
+* 几何着色器与曲面细分着色器(https://roystan.net/articles/grass-shader/)
+
+  几何着色器在曲面细分着色器(tessellation shader,包含两个可编程的着色器：hull shader和domain shader)之后（如果没有做曲面细分则是在vertex shader之后），在fragment shader之前（顺便光栅化在fragmen shader前一步执行）。
+  
+  几何着色器以一个图元为输入，输出一个或多个图元。要注意的是，由于一般vertex最后输出的是clipsapce下的坐标，然后fragment接受，所以理所当然的，geoshader输出的也应该是clipspace下坐标，记得做转换，同时将vertex的输出改为不做转换的坐标，其实就是将toclipspace延迟到了geoshader中做。
+
+  几何着色器如何知道TriangleStream里的vertex是如何组成三角形的？答案是每个新的vertex将和前两个vertex组成三角形。如果需要更多三角形流（triangle strip），可以在TriangleStream中使用RestartStrip函数
+  
+  ![image](https://github.com/CHy-KK/Images/blob/main/grass-construction.gif?raw=true)
+  
+* SSAO
+  
+  先对屏幕空间下进行世界坐标重建，然后对于每个像素使用法线贴图取法线信息（需要deferred pass），然后使用法线建立切线坐标系，按照给定的采样半径在半球上采样，对于采样点计算剪裁空间坐标，w值为深度值，然后除以w在规范到01空间得到ndc坐标，使用xy取得对应位置深度图上深度，与采样点深度比较，若小于说明遮挡住，ao+=1。
+
+  优化：length(采样向量)得到weight值，即采样点距离越大ao越没用；同时要忽略掉深度差距过大的情况，这种情况下不会对ao做出贡献；双边滤波模糊
+
+  引擎中的AO：烘焙，优势在于不受物体本身的UV影响，操作简单，缺点在于无法烘焙静态物体
+  
+  SSAO：灵活，实时，但效果不佳且消耗大(烘焙完用贴图就行)
+
+* 移动端TB(D)R架构tile based （defered） rendering
+  
+  * Soc（system on chip），将gpu、cpu、内存等其他手机硬件模块组合在一起的芯片，其中gpu和cpu共享一片内存地址，但都有各自的SRAM的cache缓存，也叫on chip memory，一般几百k~几M大，读取速度比内存读取速度快几十到百倍。在TBDR（延迟TBR）下，on-chip memory会存储Tile的颜色、深度和模板缓冲，读写修改速度都很快。
+  * 像素填充率 = ROC运行时钟频率 * ROP个数 * 每个时钟ROP能处理像素的数量（rop即光栅化处理单元，就是光栅化元件）
+  * Stall：当一个GPU两次运算结果之间有依赖关系而必须串行时的等待过程。
+
+  TB(D)R简单来说就是屏幕被分为数个16 * 16或32 * 32的像素块（tile-瓦片）来渲染。这里的defer不是传统意义上的延迟管线，而是指 阻塞+批处理 GPU处理 一帧 的多个数据，然后一起处理。目前市面上基本上所有手机都是TBDR。与之相对的PC端架构为IMR（immediate mode rendering立即渲染架构），可以理解为我们一般认为的渲染管线。
+  
+  TBDR渲染流程（宏观）：
+  
+  1. 执行所有与几何相关的处理得到所有的primitive list（图元列表，一般来说就是三角形列表），并确定每个tile上有哪些图元。
+  2. 逐tile执行光栅化及其后续处理并写入tile buffer，在完成所有tile后将frame buffer从tile buffer写回到system memory。
 
 
  
