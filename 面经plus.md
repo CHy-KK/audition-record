@@ -24,7 +24,11 @@
 * __opengl的上下文与状态机__
 * __opengl的设置参数哪些对效率影响最大？drawcall的性能开销主要在哪一方面？__
   
-  ⭐⭐⭐⭐⭐⭐Unity中DrawCall和openGL、光栅化等有何内在联系，为什么说DC降低有助于渲染性能优化？ - 文礼的回答 - 知乎  https://www.zhihu.com/question/36357893/answer/569416982为什么应该尽量减少draw call？https://www.zhihu.com/question/27933010/answer/517754841
+  ⭐⭐⭐⭐⭐⭐Unity中DrawCall和openGL、光栅化等有何内在联系，为什么说DC降低有助于渲染性能优化？ - 文礼的回答 - 知乎  https://www.zhihu.com/question/36357893/answer/569416982 
+
+  https://www.zhihu.com/question/27933010/answer/517754841 为什么应该尽量减少draw call？
+
+  https://zhuanlan.zhihu.com/p/76562300 什么是drawcall setpasscall？
   
   答：drawcall是CPU调用图形编程接口，来命令GPU进行渲染的操作。为了CPU和GPU能并行工作，就需要一个命令缓冲区。命令缓冲区包括一个命令队列，由CPU向其中添加命令，而GPU从中读取命令。这两个过程是独立的，因此CPU和GPU可以互相独立工作。当CPU要渲染一个对象时，可以向命令缓冲区添加命令，而GPU完成了上一次的渲染任务后，就可以从命令队列里取出一个命令执行。
   
@@ -59,6 +63,17 @@
   __从纹理角度来看减少drawcall__
 
   由于每次渲染状态或参数比如纹理设置的改变CPU都需要重新提交drawcall，导致浪费大量时间，所以有很多纹理设置可以减少drawcall。比如最常用的纹理图集，也就是每次把一组纹理放到一张纹理内，然后要使用的时候就按照uv偏移来找要其中哪一张。这样就可以降低纹理频繁切换带来的消耗。
+
+  __静态批处理 vs SRP Batch vs GPU Instancing vs 动态批处理__
+
+  简单来说，我们主要要减少的是setPassCall，因为实际上消耗资源的是切换GPU的shader参数，也就是setpasscall的内容。即使我们什么都不做，GPU在渲染连续两个连续的完全相同的材质时也不会调用setpasscall，但是会调用drawcall，而单纯的调用drawcall是不太消耗资源的。可以根据下图右边的材质（同颜色表示相同材质）渲染顺序来计算sepasscall的数量，注意有两个必存在的setPassCall——DrawGL和绘制天空盒。
+  ![image](https://github.com/CHy-KK/Images/blob/main/setPassCall.png?raw=true)
+  
+  * SRP Btach能合并使用同一shader的不同mat，不同mesh的物体，但没有减少drawcall，只是减少了切换mat导致的setPassCall。其中SRP batch在GPU中保留Cbuffer中的properties以及不同物体的空间转换矩阵（M），从而避免每个drawcall都要将shader信息从CPU发送到GPU；每个物体对于该保存地址对应有一个offset，渲染该物体的drawcall只需要传送这个offset查询对应数据即可。因此不会减少drawcall数量，只会减少setPassCall的数量，而原来是每个材质（注意不是每个物体）一次setPassCall
+  * GPU Instancing能够使用一个draw call来绘制所有使用相同mesh和相同material的物体。CPU将所有使用同一mesh物体的空间变化（objectToWorld）和材质信息放入一个发送到GPU的数组中，GPU会遍历数组绘制材质。从而避免了由切换渲染物体导致的drawcall。GPU instancing根据平台不同有数量限制，如果超出最大值会分成两个drawcall
+  * Dynamic Batch能将不同mesh但使用同一材质的物体，组装成一个更大的物体提交GPU，一个批次的动态物体顶点数是有限制的，以下是开启和不开启的对比（sphere由于网格过多所以无法使用dynamicbatch）。对比两张图我们可以清晰的看到，开启DB甚至比不开还慢，且同样都是33个setPassCall。这是因为，首先不开启DB时，物体的渲染顺序也会被调整为优先渲染同一材质，也就是保证了最少的材质切换，另一方面DB也是将同一物体组装成同一
+  ![image](https://github.com/CHy-KK/Images/blob/main/dynamicBatch_sphere.png?raw=true)
+  ![image](https://github.com/CHy-KK/Images/blob/main/dynamicBatch_cube.png?raw=true)
 
 * CPU与GPU的单向数据传递GPU计算速度的确比CPU快很多，所以可能有的想法就是先让CPU将数据传到GPU中进行计算，等GPU计算完后CPU再将结果读取回来，再基于这个结果进行判断，之后再告诉CPU如何绘制，这个过程叫back-force。由于现代引擎中render和logic是不同步的，但是如果有哪个render步骤需要等back-force的话，这样做会导致有半帧或者一帧的画面和逻辑不同步的现象出现。因此在设计代码时，尽量保证数据的单向传输（CPU -> GPU）,避免计算同步问题，且不要从显卡中读取数据。
 
@@ -269,7 +284,7 @@ https://zhuanlan.zhihu.com/p/393485253)
   * 每个线程有自己的本地内存，每个block有共享内存空间（访问速度接近L1 cache），每个grid会访问全局内存。每个SM有64K共享内存，由16个4字节大小的bank组成。一般来说现在的GPU是半个warp去访问这16个bank。如果不同线程访问的bank地址一致就会产生冲突，冲突时需要冲突的线程轮流访问该bank，浪费时间。（或者使用访问一次后广播该bank数据的方式降低消耗），还是要尽量避免产生冲突
 
 
-* 几何着色器与曲面细分着色器(https://roystan.net/articles/grass-shader/)
+* __几何着色器与曲面细分着色器__(https://roystan.net/articles/grass-shader/)
 
   几何着色器在曲面细分着色器(tessellation shader,包含两个可编程的着色器：hull shader和domain shader)之后（如果没有做曲面细分则是在vertex shader之后），在fragment shader之前（顺便光栅化在fragmen shader前一步执行）。
   
@@ -279,7 +294,7 @@ https://zhuanlan.zhihu.com/p/393485253)
   
   ![image](https://github.com/CHy-KK/Images/blob/main/grass-construction.gif?raw=true)
   
-* SSAO
+* __SSAO__
   
   先对屏幕空间下进行世界坐标重建，然后对于每个像素使用法线贴图取法线信息（需要deferred pass），然后使用法线建立切线坐标系，按照给定的采样半径在半球上采样，对于采样点计算剪裁空间坐标，w值为深度值，然后除以w在规范到01空间得到ndc坐标，使用xy取得对应位置深度图上深度，与采样点深度比较，若小于说明遮挡住，ao+=1。
 
@@ -289,18 +304,162 @@ https://zhuanlan.zhihu.com/p/393485253)
   
   SSAO：灵活，实时，但效果不佳且消耗大(烘焙完用贴图就行)
 
-* 移动端TB(D)R架构tile based （defered） rendering
+* __移动端TB(D)R架构tile based （defered） rendering__
   
   * Soc（system on chip），将gpu、cpu、内存等其他手机硬件模块组合在一起的芯片，其中gpu和cpu共享一片内存地址，但都有各自的SRAM的cache缓存，也叫on chip memory，一般几百k~几M大，读取速度比内存读取速度快几十到百倍。在TBDR（延迟TBR）下，on-chip memory会存储Tile的颜色、深度和模板缓冲，读写修改速度都很快。
   * 像素填充率 = ROC运行时钟频率 * ROP个数 * 每个时钟ROP能处理像素的数量（rop即光栅化处理单元，就是光栅化元件）
   * Stall：当一个GPU两次运算结果之间有依赖关系而必须串行时的等待过程。
 
-  TB(D)R简单来说就是屏幕被分为数个16 * 16或32 * 32的像素块（tile-瓦片）来渲染。这里的defer不是传统意义上的延迟管线，而是指 阻塞+批处理 GPU处理 一帧 的多个数据，然后一起处理。目前市面上基本上所有手机都是TBDR。与之相对的PC端架构为IMR（immediate mode rendering立即渲染架构），可以理解为我们一般认为的渲染管线。
+  TB(D)R简单来说就是屏幕被分为数个16 * 16或32 * 32的像素块（tile-瓦片）来渲染。这里的defer不是传统意义上的延迟管线，而是指 阻塞+批处理 GPU处理 一帧 的多个数据，然后一起处理。目前市面上基本上所有手机都是TBDR。与之相对的PC端架构为IMR（immediate mode rendering立即渲染架构），可以理解为我们一般认为的渲染管线。使用TBDR的目的当然是因为移动端gpu算力较差无法同时对一帧进行处理。
   
   TBDR渲染流程（宏观）：
   
   1. 执行所有与几何相关的处理得到所有的primitive list（图元列表，一般来说就是三角形列表），并确定每个tile上有哪些图元。
-  2. 逐tile执行光栅化及其后续处理并写入tile buffer，在完成所有tile后将frame buffer从tile buffer写回到system memory。
+  2. 逐tile执行光栅化及其后续处理并写入tile buffer，在完成所有tile后从tile buffer写回到system memory也就是frame buffer中。
+
+  IMR图示
+
+  ![image](https://github.com/CHy-KK/Images/blob/main/IMR.png?raw=true)
+
+  TBDR图示
+
+  ![image](https://github.com/CHy-KK/Images/blob/main/TBDR.png?raw=true)
+  总结来说，IMR少了tile环节，光栅化后渲染shading数据直接写入framebuffer。
+
+  * TBDR优势：
+  
+    * 给消除overdraw提供了便利（overdraw即同一个像素多次着色，给gpu很大的压力，减少被遮挡像素的texturing和shading可以解决overdraw）
+    * cache friendly，由于tile buffer在cache中读写很快，以降低render rate为代价，降低带宽，省电。也就是慢一点，但是功耗小一点。
+
+  * 缺点：
+    
+    * binning是在vertex之后，要将几何数据写入内存中，然后才被fragment shader读取，其中需要很多几何数据的管线， 容易在此处有性能瓶颈。
+    * 一个图元可能在几个tile交界处，那么每个tile都要绘制一次该图元，也就是总的渲染次数会多于IMR。
+
+  TBDR的两个defer过程（或批处理过程）
+  * binning（类似四叉树）：确定一个图元由几个tile渲染（覆盖了几个tile）
+  * early-depth-test（early-z?）
+
+* __⭐⭐⭐⭐⭐移动端优化方案__：https://www.bilibili.com/video/BV1Bb4y167zU/?p=2&spm_id_from=pageDriver&vd_source=a496344996aebd6de06a773bff299dc1 最后十分钟
+
+* __为什么后处理把图像渲染在一个覆盖全屏幕的三角形上比用两个三角形更好？__
+
+  因为这样可以有效节省两个三角形边界像素的overdraw，我们需要知道GPU处理像素时并非是一个像素一个像素处理的，而是以2 * 2或者8 * 8为一组像素并行渲染的，所以会被overdraw的并非只有边界上的一个像素，而是靠近边界上的一组像素都会被绘制两次（光栅化和fragment部分应该都会？）。
+  
+  另外需要注意，这个全屏幕三角形无论多大都无所谓，因为只要他只覆盖了屏幕上的像素，那么需要处理的就只有屏幕上的像素数量，哪怕是屏幕的1k倍也无所谓。
+
+* __SRP__
+  
+  不知道从哪讲起好，以后可能再补充吧
+  
+  1. 首先，我们需要创建一个SRP asset，继承RenderPipelineAsset类，给他挂个CreateAssetMenu的tag我们就可以在菜单栏里创建这个asset文件。该asset类中的CreatePipeline函数我们需要重写，直接返回一个我们创建的SRP实例即可。我们可以在这个asset类中自定义属性传给这个SRP实例。
+
+      ``` c#
+      [CreateAssetMenu(menuName = "Rendering/Custom Render Pipeline")]
+      public class CustomRenderPipelineAssets: RenderPipelineAsset
+      {
+          [SerializeField] public bool useDynamicBatching = true;
+          [SerializeField] public bool useGPUInstancing = true;
+          [SerializeField] public bool useSRPBatcher = true;
+          protected override RenderPipeline CreatePipeline()
+          {
+              return new CustomRenderPipeline(useDynamicBatching, useGPUInstancing, useSRPBatcher);
+          }
+      }
+      ```
+
+      在自定义的SRP类中，我们需要继承RenderPipeline这个类，然后对其中的Render函数进行重写，Render函数传入一个ScriptableRenderContext参数和一个Camera队列，也就是SRP允许的多个Camera叠加渲染。我们需要创建一个CameraRenderer类，来专门对context和每个camera单独进行处理，同时可以将之前在asset配置文件中自定义的参数一并传入。至此才准备开始真正的渲染部分。
+      ```c#
+      public class CustomRenderPipeline : RenderPipeline
+      {
+          CameraRenderer renderer = new CameraRenderer();
+          private bool useDynamicBatching;
+          private bool useGPUInstancing;
+
+          public CustomRenderPipeline(bool useDynamicBatching, bool useGPUInstancing, bool useSRPBatcher)
+          {
+              this.useDynamicBatching = useDynamicBatching;
+              this.useGPUInstancing = useGPUInstancing;
+              GraphicsSettings.useScriptableRenderPipelineBatching = useSRPBatcher;
+          }
+          
+          protected override void Render(ScriptableRenderContext context, Camera[] cameras)
+          {
+              // 将每个camera单独渲染，≈URP中的scriptable renderers
+              foreach (Camera camera in cameras)
+              {
+                  renderer.Render(context, camera, useDynamicBatching, useGPUInstancing);
+              }
+          }
+      }
+      ```
+
+      上一步中我们将context和camera以及一些参数传给了render函数，接下来开始真正的渲染流程。首先我们来简单说一下ScriptableRenderContext，context即常说的上下文信息，context首先会根据传入的摄像机设置渲染器中的相机参数，然后commandBuffer会将渲染过程相关的指令写入到context中，最后context使用submit提交指令将渲染状态和指令提交到GPU。对于渲染状态的更新，最明显的体现在下面这条指令
+      ```c#
+      public unsafe void DrawRenderers(
+        CullingResults cullingResults,
+        ref DrawingSettings drawingSettings,
+        ref FilteringSettings filteringSettings,
+        ShaderTagId tagName,
+        bool isPassTagName,
+        NativeArray<ShaderTagId> tagValues,
+        NativeArray<RenderStateBlock> stateBlocks
+      )
+      ```
+      * cullingResults用来记录物体、灯光、反射探针剔除的结果
+      * drawingsetting使用sorttingSettings也就是对世界物体进行排序后的结果来设置绘制顺序，同时设置使用该配置绘制的pass（通过pass中的Tags中的"LightMode"来识别）
+        ```c#
+        var sorttingSettings = new SortingSettings(camera)
+        {
+            // 注意，CommonOpaque和CommonTransparent都是先绘制opaque物体再绘制transparent物体
+            criteria = SortingCriteria.CommonOpaque // 以opaque绘制模式，从前向后绘制
+        };
+        // 这里的unlitShaderTagId值为"SRPDefaultUnlit"
+        var drawingSettings = new DrawingSettings(unlitShaderTagId, sorttingSettings)
+        {
+            enableDynamicBatching = useDynamicBatching,
+            enableInstancing = useGPUInstancing
+        };
+        ```
+      * FilteringSetting设置过滤参数来渲染指定的layer
+        ```c#
+        // 只绘制不透明物体
+        var filteringSettings = new FilteringSettings(RenderQueueRange.opaque);
+        ```
+      * isPassTagName作为说明后面的tagValues是pass中的tag-LightMode，还是subshader中的tag-RenderType
+      * tagValues和后面的stateBlocks长度匹配，可以说是一一对应的关系。渲染器会比对shader中的tag和tagValues中的值，如果匹配上了就使用对应的stateBlocks中的值。
+        ```c#
+        if (renderTypes.Length != stateBlocks.Length)
+            throw new ArgumentException(string.Format("Arrays {0} and {1} should have same length//后面省略
+        ```
+      * stateBlocks更改stateblock来重载深度、模板写入方法
+        ```c#
+        // 以下摘自urp管线drawobjectpass
+        if (stencilState.enabled)
+        {
+            m_RenderStateBlock.stencilReference = stencilReference;
+            m_RenderStateBlock.mask = RenderStateMask.Stencil;
+            m_RenderStateBlock.stencilState = stencilState;
+        }
+        ```
+
+      这里说明以下context.ExecuteCommandBuffer(commandBuffer)这个函数的作用，他其实只是把commandBuffer中的指令注入到context中，真正向GPU提交绘制指令和绘制状态的是context.Submit()。也就是说我们可以使用ExecuteCommandBuffer函数来决定在哪个渲染阶段将commandbuffer注入到context中
+
+  2. 关于setRenderTarget的作用，目前来看其实就是先调用SetRenderTarget，然后调用DrawMesh或者其他绘制接口，这样就把绘制结果放在了一张RT或者RTT上而不是屏幕上，然后我们可以对这个RT做任意操作，和Blit其实挺类似的。
 
 
- 
+* __光追中的透明材质小trick__
+
+  由于在光追中我们会用折射光线去计算一些透明材质，那么如果模拟空心的半透材质，可以使用在原本实心半透物体中间套一个法线方向全部相反的稍小一点的同物体，这样相当于光线从空气->折射介质->空气（空气物体内部）->折射介质->空气。关键就在于需要内部这个物体的法线全部反向，原因在于我们对于单个折射材质的折射率的计算方式是，如果入射方向和法线方向相反，视为从空气射入该半透物体，取折射率的倒数计算；法线反向之后，同样是光线射入稍小的那个物体，但是折射率不用取倒了，也就是相当于从半透物体射入空气。
+
+* __景深-光追__
+
+  首先我们要搞清楚，为什么物体在屏幕上能够清晰锐利，唯一的原因就在于，对于一个像素的多次采样，均落在了一个点的附近，如果一个像素的多次采样得到的结果覆盖了很大的范围，那么这个点当然是模糊的。那么景深需要模仿在透镜焦距处的物体清晰，焦距范围之外的物体模糊，要如何做呢？首先，我们需要设置焦距，也就是实际上近平面到相机的距离，然后我们会把camera视为一个透镜，其实就是把在以camera为中心的一个平面圆上采样作为采样光线的起始点，也就是原来的采样光线起点只有cameraposition，现在是一个范围。
+
+  现在对于近平面上的每个像素，从camera平面圆上射出的光线都会覆盖一个范围，但这些光线又会在一个位置汇聚为一点，那么这个点上打中的物体当然就是清晰的。这个位置在哪里呢？非常显而易见，就是在近平面上，因为近平面上一个像素的采样光线，当然全都必须经过这个像素，这说明什么？这说明所有位置处于近平面附近，或者说距离相机距离为焦距的物体都是清晰的！那么这个相机平面圆是什么？当然就是一个透镜！我们也可以反过来理解，就是处于近平面上物体的一点，只对一个像素有贡献，别的像素采样不到这个点，那么他当然是清晰锐利的。
+
+  这时我们再考虑或近或远的物体，从下面这张图就可以清晰地看出来。
+  ![git链接挂了后面再加上图片depthoffield]()
+
+  对于camera平面圆的大小，只影响模糊的程度，不会影响模糊和清晰的范围。平面圆半径=0时其实就相当于单相机成像，也就是没有景深效果。
+
