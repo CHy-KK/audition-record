@@ -471,3 +471,16 @@ https://zhuanlan.zhihu.com/p/393485253)
 
   对于camera平面圆的大小，只影响模糊的程度，不会影响模糊和清晰的范围。平面圆半径=0时其实就相当于单相机成像，也就是没有景深效果。
 
+
+* __raytracing BVH思路总结__
+
+  BVHnode同样也是继承自hittable类，因为我们想构建的BVH树的叶节点是正常hittable的子类，也就是sphere、运动sphere这些。
+
+  我们构建BVH的方式是，将之前随机生成的hittableList列表作为参数传递给BVHnode，在BVH的构造函数中，会对hittableList中的objects以某一个维度(随机x y z)先进行一次排序，然后将objecs列表对半分位两个子列表，然后再对两个子列表递归的构建两个子BVHnode。当objects长度<=2时，也就是需要构建非BVHnode的叶节点（别忘了我们的节点类型是hittable，而BVHnode继承自hittable）。这样我们就完成了第一步，自上而下的构建BVH结构。
+
+  在构建了BVH结构之后，我们还要对每一个BVHnode计算包围盒，这一步是自下而上的，先从叶节点开始计算。因为我们的项目比较简单所以暂时只有运动/静止的sphere，sphere的aabb非常好构建，就是origin ± vec3(radius)。运动的sphere按照时间计算origin即可。构建完叶节点的aabb之后，递归结束后上一层会根据子节点构建的aabb计算包裹两个子aabb的父aabb，然后直到最上层最大的那个aabb。至此我们完成了整个BVH的构建。
+
+  由于BVHnode继承自hittable，所以也有hit函数，BVhnode的hit就直接调用其aabb属性的hit即可。然后也要同样递归地计算两个子节点的hit。由于我们只有一个BVH结构，所以投射的光线都是先击中最大的那个BVHnode（头结点）然后向下查找，直到击中某个叶节点或没有。hit函数中引用传递的hitrecord参数会记录t最小的那个击中点。然后就是正常的颜色计算等等，这就是一个完整的BVH结构的raytracing过程。
+
+  
+
