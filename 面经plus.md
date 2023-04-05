@@ -29,6 +29,9 @@
 		2. 扩展性高，如果想增加一个产品，只要扩展一个工厂类就行
 		3. 屏蔽产品的具体实现，调用者只关心产品的接口
 
+* __虚拟内存__
+意义：程序可以使用一系列相邻的虚拟地址来访问物理内存中不相邻的大内存缓冲区，这篇缓冲区是大于可用物理内存的内存缓冲区，实际保存在外存磁盘中。当物理内存的供应量变小时，内存管理器会将物理内存页保存到磁盘文件。数据和代码页会根据需要在物理内存与磁盘之间移动。不同进程使用的虚拟地址彼此隔离，一个进程中的代码无法更改另一进程正在使用的物理内存。进程在使用虚拟内存时，会维护一个内存地址，该地址指向实际外存中保存的数据地址。
+
 * __opengl的上下文与状态机__
 
 ---
@@ -85,11 +88,11 @@ __从纹理角度来看减少drawcall__
 ![image](https://github.com/CHy-KK/Images/blob/main/setPassCall.png?raw=true)
 
 * SRP Btach能合并使用同一shader的不同mat，不同mesh的物体，但没有减少drawcall，只是减少了切换mat导致的setPassCall。其中SRP batch在GPU中保留Cbuffer中的properties以及不同物体的空间转换矩阵（M），从而避免每个drawcall都要将shader信息从CPU发送到GPU；每个物体对于该保存地址对应有一个offset，渲染该物体的drawcall只需要传送这个offset查询对应数据即可。因此不会减少drawcall数量，只会减少setPassCall的数量，而原来是每个材质（注意不是每个物体）一次setPassCall
-* GPU Instancing能够使用一个draw call来绘制所有使用相同mesh和相同material的物体。CPU将所有使用同一mesh物体的空间变化（objectToWorld）和材质信息放入一个发送到GPU的数组中，GPU会遍历数组绘制材质。从而避免了由切换渲染物体导致的drawcall。GPU instancing根据平台不同有数量限制，如果超出最大值会分成两个drawcall
+* GPU Instancing能够使用一个draw call来绘制所有使用相同mesh和相同material的物体。CPU将所有使用同一mesh物体的空间变化（objectToWorld）和材质信息放入一个发送到GPU的数组中，GPU会遍历数组绘制材质。从而避免了由切换渲染物体导致的drawcall。GPU instancing根据平台不同有数量限制，如果超出最大值会分成两个drawcall。所以GPU instancing是通过使用数组来减少draw call，而非其他合批想要解决set pass call。
 * Static Batch能合并所有相同material不同mesh的vertex/index buffer合并为一个大的vertex/index buffer，然后会记录每一个子物体在大buffer中的位置，然后只需要一次setPassCall，并调用多次drawcall来绘制每一个子物体。但问题在于合并之后的物体会额外占用很大的内存空间，还会导致打包之后的应用体积变大（合并的数据保存到本地了）。
 * Dynamic Batch能够使用一次drawcall绘制多个不同mesh但使用同一材质的物体。他会先将共享材质的模型顶点信息变换到世界空间，然后调用一个drawcall进行绘制。但是由于顶点变换是由CPU完成的，会占用额外的CPU开销。一个批次的动态物体顶点数是有限制的，以下是开启和不开启的对比（sphere由于网格过多所以无法使用dynamicbatch）。对比两张图我们可以清晰的看到，开启DB甚至比不开还慢，且同样都是33个setPassCall。这是因为，首先不开启DB时，物体的渲染顺序也会被调整为优先渲染同一材质，也就是保证了最少的材质切换。
 
-  动态批处理和静态相比，减少了预先复制模型顶点到一个大vertexbuffer的过程，减少了内存占用和打包体积，但CPU的性能消耗不小，静态批处理在这一点上会更高效。
+  动态批处理和静态相比，减少了预先复制模型顶点到一个大vertexbuffer的过程，减少了内存占用和打包体积，但CPU的性能消耗不小，静态批处理在这一点上会更高效。但是两者都是采用把小物体打包成大物体的方式进行合批，
   ![image](https://github.com/CHy-KK/Images/blob/main/dynamicBatch_sphere.png?raw=true)
   ![image](https://github.com/CHy-KK/Images/blob/main/dynamicBatch_cube.png?raw=true)
 
@@ -116,8 +119,10 @@ __从纹理角度来看减少drawcall__
     2. 清除颜色和深度值：如果切换到的RenderTarget需要清除，CPU需要告诉GPU清除颜色和深度值的数值。
     3. 视口设置：如果RenderTarget的视口不同于当前的视口，CPU需要告诉GPU新的视口设置。
 6. 切换使用的shader pass：由于shader在编译阶段就变成指令码从CPU发送给了GPU，并存储在显存中，所以在setpasscall时需要切换使用的shader的话，只需要指定shader在显存中的地址即可。
-    
 
+* __GPU会从内存中读取那些数据？__
+
+  顶点数据（坐标、法线、uv、颜色、顶点索引等）、纹理数据、渲染目标（frame buffer、depth buffer）、shader、uniform数据
 
 * CPU与GPU的单向数据传递GPU计算速度的确比CPU快很多，所以可能有的想法就是先让CPU将数据传到GPU中进行计算，等GPU计算完后CPU再将结果读取回来，再基于这个结果进行判断，之后再告诉CPU如何绘制，这个过程叫back-force。由于现代引擎中render和logic是不同步的，但是如果有哪个render步骤需要等back-force的话，这样做会导致有半帧或者一帧的画面和逻辑不同步的现象出现。因此在设计代码时，尽量保证数据的单向传输（CPU -> GPU）,避免计算同步问题，且不要从显卡中读取数据。
 
@@ -146,7 +151,9 @@ __从纹理角度来看减少drawcall__
   
   这个参数会指定我们希望显卡如何管理给定的数据。如果顶点的位置数据一直不变就用staticdraw，如果经常变化就用后两个，以确保显卡把数据放在能够高速写入的显存部分。换句话说，VBO就是在显存中开辟出的一块内存缓冲区，用于储存顶点的各类属性信息，而每个VBO的id都能在Opengl中映射得到这个VBO在显存中的地址，通过这个id可以对特定VBO内的数据进行存取操作。网上很多说VAO是解释VBO的，但我认为这个说法并不对。解释VBO数据的是glVertexAttribPointer，VAO只是将VBO与顶点属性指针的配置保存起来，在每次绘制物体之前绑定VAO，就可以告诉GPU要用哪一块VBO数据（此时已经存在于显存中），以及这一块VBO的顶点属性配置。也就是说，VAO记录了glVertexAttribPointer()函数的结果
 
----
+
+
+
 
 * __帧缓冲与渲染缓冲直接渲染都是在默认帧缓冲上的挂载的渲染缓冲进行的。如果要使用我们自己的帧缓冲，一个完整的帧缓冲有以下四个条件__
 	* 附加至少一个缓冲（颜色、深度或模板缓冲）。
@@ -335,43 +342,6 @@ https://zhuanlan.zhihu.com/p/393485253)
   
   SSAO：灵活，实时，但效果不佳且消耗大(烘焙完用贴图就行)
 
-* __移动端TB(D)R架构tile based （defered） rendering__
-  
-  * Soc（system on chip），将gpu、cpu、内存等其他手机硬件模块组合在一起的芯片，其中gpu和cpu共享一片内存地址，但都有各自的SRAM的cache缓存，也叫on chip memory，一般几百k~几M大，读取速度比内存读取速度快几十到百倍。在TBDR（延迟TBR）下，on-chip memory会存储Tile的颜色、深度和模板缓冲，读写修改速度都很快。
-  * 像素填充率 = ROC运行时钟频率 * ROP个数 * 每个时钟ROP能处理像素的数量（rop即光栅化处理单元，就是光栅化元件）
-  * Stall：当一个GPU两次运算结果之间有依赖关系而必须串行时的等待过程。
-
-  TB(D)R简单来说就是屏幕被分为数个16 * 16或32 * 32的像素块（tile-瓦片）来渲染。这里的defer不是传统意义上的延迟管线，而是指 阻塞+批处理 GPU处理 一帧 的多个数据，然后一起处理。目前市面上基本上所有手机都是TBDR。与之相对的PC端架构为IMR（immediate mode rendering立即渲染架构），可以理解为我们一般认为的渲染管线。使用TBDR的目的当然是因为移动端gpu算力较差无法同时对一帧进行处理。
-  
-  TBDR渲染流程（宏观）：
-  
-  1. 执行所有与几何相关的处理得到所有的primitive list（图元列表，一般来说就是三角形列表），并确定每个tile上有哪些图元。
-  2. 逐tile执行光栅化及其后续处理并写入tile buffer，在完成所有tile后从tile buffer写回到system memory也就是frame buffer中。
-
-  IMR图示
-
-  ![image](https://github.com/CHy-KK/Images/blob/main/IMR.png?raw=true)
-
-  TBDR图示
-
-  ![image](https://github.com/CHy-KK/Images/blob/main/TBDR.png?raw=true)
-  总结来说，IMR少了tile环节，光栅化后渲染shading数据直接写入framebuffer。
-
-  * TBDR优势：
-  
-    * 给消除overdraw提供了便利（overdraw即同一个像素多次着色，给gpu很大的压力，减少被遮挡像素的texturing和shading可以解决overdraw）
-    * cache friendly，由于tile buffer在cache中读写很快，以降低render rate为代价，降低带宽，省电。也就是慢一点，但是功耗小一点。
-
-  * 缺点：
-    
-    * binning是在vertex之后，要将几何数据写入内存中，然后才被fragment shader读取，其中需要很多几何数据的管线， 容易在此处有性能瓶颈。
-    * 一个图元可能在几个tile交界处，那么每个tile都要绘制一次该图元，也就是总的渲染次数会多于IMR。
-
-  TBDR的两个defer过程（或批处理过程）
-  * binning（类似四叉树）：确定一个图元由几个tile渲染（覆盖了几个tile）
-  * early-depth-test（early-z?）
-
-* __⭐⭐⭐⭐⭐移动端优化方案__：https://www.bilibili.com/video/BV1Bb4y167zU/?p=2&spm_id_from=pageDriver&vd_source=a496344996aebd6de06a773bff299dc1 最后十分钟
 
 
 * __为什么后处理把图像渲染在一个覆盖全屏幕的三角形上比用两个三角形更好？__
@@ -380,19 +350,134 @@ https://zhuanlan.zhihu.com/p/393485253)
   
   另外需要注意，这个全屏幕三角形无论多大都无所谓，因为只要他只覆盖了屏幕上的像素，那么需要处理的就只有屏幕上的像素数量，哪怕是屏幕的1k倍也无所谓。
 
-## __如何减少OverDraw__
+## __OverDraw问题__
 
 为什么要减少overdraw？前面提到过，overdraw就是一帧中同一个像素被重复绘制的次数。所以解决overdrwa就是为了解决GPU端像素填充率和计算量的瓶颈问题。像素填充率就是GPU在一帧之内可以向帧缓存写入像素的数量，一般以百万像素/s或十亿像素/s来衡量。通常按照光栅化单元*该GPU的核心频率来计算。而每一个像素至少要执行一次光栅化，片元着色器和输出合并三个阶段，所以降低需要参与光栅化渲染的像素数量使性能优化的重中之重。
 
-### __Quad Over Draw__
-[那些关于OverDraw的前世今生（2） - Coresi7的文章 - 知乎](https://zhuanlan.zhihu.com/p/76562370)
-
-那么实际渲染中，导致overdraw的元凶是什么？首先上面提到过，GPU是渲染
-
-### __不透明物体__
+### __1. 不透明物体overdraw优化__
 对于不透明物体，最简单的手段之一即是从前向后排序，这样可以免去被遮挡的片元进行深度测试之后的blend等操作，并不用写入帧缓存直接被抛弃。
 
-其改进之一是使用early-z方法，在进行片元着色之前先做一次深度测试，保留通过测试的片元进行着色计算。实用early-z之前最好还是将物体从前到后进行一次排序，这样可以保证early-z发挥最高效率，如果反过来还是会把被遮挡片元写入深度缓冲区和帧缓冲，这样会损失一部分性能。如果开启alpha test这类丢弃片元的测试，或者手动写入深度值等，gpu会自动关闭early-z，因可能导致early-z的结果不正确。
+* early-z：其改进之一是使用early-z方法，在进行片元着色之前先做一次深度测试，保留通过测试的片元进行着色计算。实用early-z之前最好还是将物体从前到后进行一次排序，这样可以保证early-z发挥最高效率，如果反过来还是会把被遮挡片元写入深度缓冲区和帧缓冲，这样会损失一部分性能。如果开启alpha test这类丢弃片元的测试，或者手动写入深度值等，gpu会自动关闭early-z，因可能导致early-z的结果不正确。
+
+* pre-z：另一种方式是pre-z，即在开始正式的渲染之前，先用一个pass只写入深度，然后在正式渲染中深度测试选择equal。但是因为选择了多pass渲染，所以会打断批处理，使用的时候要注意。
+
+### __2. Quad Over Draw__
+[那些关于OverDraw的前世今生（2） - Coresi7的文章 - 知乎](https://zhuanlan.zhihu.com/p/76562370)
+
+那么实际渲染中，导致overdraw的元凶是什么？首先上面提到过，GPU渲染片元的时候并不是一个片元一个片元渲染，而是一个quad一个quad渲染，一个quad一般包含四个映射到相邻像素的片元。不考虑抗锯齿的情况，就是每个像素中心属于哪个三角形，该像素就是什么颜色。那么现在有一个问题，那就是如果一个像素被多个不同三角形的片元覆盖到，那么这个像素就会被绘制多次，而由于gpu一次绘制一整个quad，所以其实是有四个像素需要多次重新绘制。在每一次绘制一个三角形之后，gpu会丢弃像素中心不属于该三角形的片元。考虑下图，一个quad被四个三角形都覆盖到了，那么就一共要绘制4*4=16次，而真实情况会更加复杂，消耗更加亏贼！而且如果这几个三角形属于一个材质还好，如果分属无法合批的材质，那么每次还要setpasscall，其消耗究极亏贼！还有个问题是GPU不一定使用2x2的quad，也可以用更大的范围比如8x8来进行光栅化，那消耗就是超级加倍的亏贼！
+![image](https://github.com/CHy-KK/Images/blob/main/quadoverdraw.jpg?raw=true)
+
+### __3. 其他情况下的overdraw__
+
+* forward render pipeline中的多光源渲染，需要对每个光源重绘一边遍。
+* 投影时的overdraw（后面再查）
+
+### __遮挡剔除__
+
+[剔除：从软件到硬件 - 洛城的文章 - 知乎](https://zhuanlan.zhihu.com/p/66407205)
+
+注：early-z、z-culling都是硬件层面的剔除
+
+#### __Occlusion Query__
+
+OQ的全过程还是建议看文章，因为我没太搞明白，尝试简单概括：
+
+* 我们首先用一个depth only的pass绘制整个场景，并在绘制前后插入occlusion query的指令，在绘制结束之后GPU会返回一个passed sample count，即通过深度测试的采样数目，来判断标记的某个物体是否完全被挡住。然后在正常的渲染流程中剔除被标记为完全遮挡的模型。
+
+  OQ有一个显而易见的优化是可以采用包围盒深度来代替模型深度，可以减小查询所需要消耗的计算量。另一个缺点是由于需要从GPU读取查询结果，GPU向CPU传递数据是非常慢的，可能会导致CPU等待GPU导致性能损耗。想解决这个问题一个方法是每一帧使用上一帧的OQ结果，虽然对于运动较快的场景可能会出错。但由于是包围盒所以总体来说影响也不明显，UE4就是默认用这种方案。但是还有另一种方案，将渲染队列中上一帧可见的物体直接进行渲染，对于上一帧不可见的物体先插入一个查询到查询队列中，当我们没有可以直接用于渲染的模型时，再去读取查询结果并更新查询物体的可见状态，并渲染可见物0体。
+
+  这里的疑点在于，到底是什么时候插入的OQ？是在depth only pass直接进行所有查询？还是一边渲染可见物体一边进行查询？相对于pre-z也是先绘制一次depth only，为什么说pre-z的depth only pass可能会打断批处理，不可以也对整个场景绘制深度然后再正常渲染吗？
+
+
+
+
+### __移动端TBDR解决overdraw__
+见下方TBDR架构篇章
+
+### __其他渲染路径解决多光源overdraw__
+
+* 延迟光照
+
+* forward+
+
+* 群组渲染
+
+
+
+## __移动端TB(D)R架构__
+
+TB(D)R架构tile based （defered） rendering
+  
+在正式开始介绍TB(D)R架构之前我们先介绍几个概念
+
+* Soc（system on chip），将gpu、cpu、内存等其他手机硬件模块组合在一起的芯片，其中gpu和cpu共享一片内存地址，但都有各自的SRAM的cache缓存，也叫on chip memory，一般几百k~几M大，读取速度比内存读取速度快几十到百倍。在TBDR（延迟TBR）下，on-chip memory会存储Tile的颜色、深度和模板缓冲，读写修改速度都很快。
+
+* 像素填充率 = ROC运行时钟频率 * ROP个数 * 每个时钟ROP能处理像素的数量（rop即光栅化处理单元，就是光栅化元件）
+
+* Stall：当一个GPU两次运算结果之间有依赖关系而必须串行时的等待过程。
+
+* 移动端是CPU、GPU分离式的架构，也就是说GPU和CPU之间交互需要数据传输，当然他们都在SOC中。但是GPU自己没有显存。
+
+* IMR（immediate mode rendering）：PC端GPU渲染架构，上面紫色的部分对应正常的渲染管线，灰色的部分对应GPU的独立显存，包括几何信息、纹理信息、深度缓存和帧缓存。这种架构下的信息传输特点就是对于每一个具体的绘制，GPU会直接和显存进行数据传输，箭头即表示读取和写入。在这种架构下，每一次渲染完的color和depth数据要写入frame buffer和depth buffer会占用很大的带宽消耗，所以IMR架构中也有使用L1 cache和L2 cache俩优化这部分大量消耗的带宽（先写入cache，然后结束后再写入内存）。同时，由于传统渲染管线是处理完一个图元立刻把生成的fragment进行着色处理，所以IMR的执行效率非常高。
+
+![image](https://github.com/CHy-KK/Images/blob/main/IMR.png?raw=true)
+
+那么移动端可以沿用IMR架构吗？答案是否。由于手机的功耗不足以支持GPU和显存传输数据需要的大量带宽，所以移动端需要一种新的架构TBR。
+注：带宽单位为bps(bit per seconds)，即每秒传输的bit率，用来描述数据传输速度。TBR架构根本上节约带宽的方法就是使用更高速带宽的cache进行读写，最后再从cache将buffer写入低带宽的内存，而不是直接和低带宽的内存进行读写。
+
+
+### __TBR__
+
+我们还是要先看懂架构图，最下面一层代表的是系统内存，也就是说TBR的几何信息、纹理、帧缓存等是保存在系统内存中，而非显存中，因为移动端的TBR架构没有独立显存，或者说TBR的显存和系统内存实际用的是同一片物理内存，但是GPU在逻辑上有自己独立的一片内存区间，这片内存区间由GPU来驱动管理。
+
+那么现在GPU要如何读取渲染数据呢？那就是图中中间的那一层：On-Chip Memory。On-Chip Memory可以理解为L1、L2 cache，但是这个缓存空间很小，所以TBR就利用这个特点来做渲染。简单来说就是TBR会将屏幕分为数个16 * 16或32 * 32的像素块（tile-瓦片）来渲染，然后把渲染结果存储到On-Chip Memory的depth buffer和color buffer中。也就是TBR从原来IMR对 __显存内__ 的Color/Depth buffer进行读写变成了对 __高速缓冲On-Chip Memory__ 的读写，减小了最影响性能的系统内存传输的开销。注意，TBR中的深度测试使用的是对每一个tile进行Early-Z，可以看到visibility test在texture and shade环节之前。
+
+![image](https://github.com/CHy-KK/Images/blob/main/TBR.jpg?raw=true)
+
+在TBR架构中，并不是来一个drawcall就直接绘制好所有tile的，考虑下图，其中DRAM就是物理内存。TBR的策略一般是对于CPU过来的绘制，先只对他们做顶点处理，也就是图中的Geometry processor部分，然后存回内存，在一定要刷新framebuffer的时候，也就是系统告诉GPU现在一定要用framebuffer时，GPU才知道不能拖了，然后读取这片几何数据并做光栅化，然后tile based rendering。
+
+![image](https://github.com/CHy-KK/Images/blob/main/TBR-on-chip%20memory.jpg?raw=true)
+
+说完了这些，应该就能理解为什么TBR能降低功耗了，对于上图中TBR和系统内存进行数据传输的箭头，读取只发生在需要几何及纹理信息时，写回也只发生在整个frame buffer都渲染完成之后，带宽消耗最大的depth buffer和color buffer读写都发生在On-chip memory上。当然我们必须要认识到一点，TBR只是为了解决功耗难题，但实际上效率最高，处理速度最快的方案还是IMR架构直接在DRAM上读写，分块渲染是牺牲了效率换区带宽功耗。
+
+### __TBDR__
+
+TBDR在TBR的基础上再加上了一个deferred。TBR主要是为了解决IMR架构的带宽问题，而TBDR则是为了解决overdraw的问题。
+
+我们可以看到在绘制管线中对了一个新阶段：HSR & Depth Test。我们一般解决overdraw的方式，也是TBR使用的是early-z，但是early-z无法完全解决，因为真正的复杂场景中，我们是没有办法根据每个物体与摄像机的距离来对他们的绘制进行排序的。所以HSR被提出了，不需要在软件层面对物体进行排序，而是直接在硬件层面做到 0 Overdraw。
+
+![image](https://github.com/CHy-KK/Images/blob/main/TBDR.png?raw=true)
+
+* HSR流程：当一个像素通过了early-z，在进入fragment shader之前，先不进行绘制，而是指标记该像素应该由哪一个图元来画，也就是上面结构图中的tag buffer，等到这个tile上所有的图元都处理完之后，再开始绘制每个已经被标记好属于哪一个图元的像素点。我们可以看到texture and shade节点会读取primitive list（图元列表）和vertex data进行绘制。
+
+至于为什么TBDR能进行这种像素级别的深度测试，是因为每次光栅化和着色计算时我们拿到的都是整个场景的图元和顶点数据（我们在TBR说过在几何阶段之后会先把一帧所有的几何数据存储到内存中，等之后有需要时再进行光栅化），而非IMR模式下顶点、图元、光栅化、片元的流水线处理，IMR架构没有办法对一个tile所有像素都深度测试完之后再着色计算，<font color="#dd0000">__即使是TBR的early-z也是每个tile的每个片元通过深度测试之后立即进行着色，这就是TBDR中的Defferd的来源，即将每个tile所有的像素着色都延迟到HSR之后，再利用tag buffer进行着色计算__</font>。
+
+
+TBDR渲染流程（宏观）：
+
+1. 从内存读取顶点数据，执行所有与几何相关的处理得到所有的primitive list（图元列表，一般来说就是三角形列表）并确定每个tile上有哪些图元，然后写回内存。
+2. 逐tile执行光栅化及其后续处理并写入tile buffer，在完成所有tile后从tile buffer写回到system memory也就是frame buffer中。
+
+
+
+
+* TBDR优势：
+
+  * 给消除overdraw提供了便利（overdraw即同一个像素多次着色，给gpu很大的压力，减少被遮挡像素的texturing和shading可以解决overdraw）
+  * cache friendly，由于tile buffer在cache中读写很快，以降低render rate为代价，降低带宽，省电。也就是慢一点，但是功耗小一点。
+
+* 缺点：
+  
+  * binning是在vertex之后，要将几何数据写入内存中，然后才被fragment shader读取，其中需要很多几何数据的管线， 容易在此处有性能瓶颈。
+  * 一个图元可能在几个tile交界处，那么每个tile都要绘制一次该图元，也就是总的渲染次数会多于IMR。
+
+TBDR的两个defer过程（或批处理过程）
+* binning（类似四叉树）：确定一个图元由几个tile渲染（覆盖了几个tile）
+* early-depth-test（early-z?）
+
+__⭐⭐⭐⭐⭐移动端优化方案__：https://www.bilibili.com/video/BV1Bb4y167zU/?p=2&spm_id_from=pageDriver&vd_source=a496344996aebd6de06a773bff299dc1 最后十分钟
+
+
 
 ## __渲染瓶颈优化问题__（见RTR3提炼总结12章）
 
@@ -489,11 +574,11 @@ CPU阶段可能产生瓶颈的原因：过多的物体需要进行排序、空�
 
 * 进行合适的纹理压缩。
 
-* 基于距离使用简化的shader（这个可能用shader variant实现？），注意不是简化模型，而是简化shader，减少需要进行的光照计算，取消specular等。
+* 基于距离使用简化的shader（这个可能用shader variant实现？），注意不是简化模型，而是简化shader，减少需要进行的光照计算，取消specular等。lod shader
 
 #### __加速fragment shader__
 
-* 对于一些需要使用复杂shader的物体，可以考虑在进行正式的颜色渲染pass之前，先进行一个仅包含深度通道的pass，在高深度复杂场景中，可以减少需要进行复杂着色的片元数量。当然要注意一点，使用多pass会打断批处理。
+* 对于一些需要使用复杂shader的物体，可以考虑在进行正式的颜色渲染pass之前，先进行一个仅包含深度通道的pass，在高深度复杂场景中，可以减少需要进行复杂着色的片元数量，这种方法也就是pre-z。当然要注意一点，使用多pass会打断批处理。
 
 * 使用LUT
 
@@ -619,7 +704,7 @@ CPU阶段可能产生瓶颈的原因：过多的物体需要进行排序、空�
   现在对于近平面上的每个像素，从camera平面圆上射出的光线都会覆盖一个范围，但这些光线又会在一个位置汇聚为一点，那么这个点上打中的物体当然就是清晰的。这个位置在哪里呢？非常显而易见，就是在近平面上，因为近平面上一个像素的采样光线，当然全都必须经过这个像素，这说明什么？这说明所有位置处于近平面附近，或者说距离相机距离为焦距的物体都是清晰的！那么这个相机平面圆是什么？当然就是一个透镜！我们也可以反过来理解，就是处于近平面上物体的一点，只对一个像素有贡献，别的像素采样不到这个点，那么他当然是清晰锐利的。
 
   这时我们再考虑或近或远的物体，从下面这张图就可以清晰地看出来。
-  ![git链接挂了后面再加上图片depthoffield]()
+  ![image](https://github.com/CHy-KK/Images/blob/main/depthoffield.jpg?raw=true)
 
   对于camera平面圆的大小，只影响模糊的程度，不会影响模糊和清晰的范围。平面圆半径=0时其实就相当于单相机成像，也就是没有景深效果。
 
@@ -695,3 +780,21 @@ CPU阶段可能产生瓶颈的原因：过多的物体需要进行排序、空�
 
   各个平面上的法线也很好求，我们是知道相机坐标以及远近平面共八个顶点坐标的（不知道也能用参数算），这样在各个平面我们都能计算出两个向量，向量方向也是知道的，那叉乘一下就可以得出朝内的法线（注意别搞错叉乘顺序了就行）。视锥平面上一点也很好求，就是camera position以及look at方向上到远近平面上的交点，其中相机坐标可以作为四个边平面上共同的点。
 
+* __抗锯齿__
+
+  锯齿产生的原因：像素分辨率与物体大小不匹配导致的问题
+
+* __GPU分支__
+
+  在shader中，如hlsl语句，如果使用条件分支语句，例如if，并不一定会产生分支。分支反应在汇编程序上也就是使用jmp、je、jne等跳转指令，跳转到分支语句地址执行指令。jmp为无条件指令，可以只修改IP（指令寄存器）也可以修改IP和CS（代码段寄存器），在进行分支跳转时，CPU会将跳转目标地址存入IP中，下一条要执行的指令将从IP中取出，这样就完成了指令跳转。
+
+  如果GPU产生了分支，由于GPU中线程是以warp（32or64线程）为单位执行指令，所以一旦产生分支，那么将会导致一个warp中的部分线程需要等待另一个分支的线程执行结束之后才能执行指令。这个等待的过程涉及到一些硬件上的操作等，会比两边都执行一遍然后使用movc指令来选择结果效率低。
+
+  当然使用if并不意味着一定会产生分支，编译器一般会默认执行flatten流程，即将分支两侧的逻辑都执行一遍，然后使用movc指令来选择结果。由于避免了分支计算的"等待"，所以效率会高一些。在shader代码中我们可以使用[flatten]或[branch]等流程控制关键字来控制GPU使用的分支方式。
+  
+  * 静态分支：用uniform来控制的分支，也就是keyword等，可以认为基本不消耗性能
+  * 动态分支：需要进行jmp跳转执行分支语句
+
+  在动态分支下，最好的优化方向是保证一个warp内判断变量的相关性最大甚至一致，也就是一个warp内判断结果大部分都是同一分支，只有少数线程处于另一分支。以下图噪声图测试为例，运行的代码逻辑为以噪声值为条件对输出颜色做不同操作。结果是噪声图密度越小（越模糊）效果越好，说明更多的warp保持了一致的分支结果，也就无需进行"等待"操作，节约了性能。(测试结果分别为block 从 1x1 到 32x32，即一格噪声的大小)
+  ![image](https://pic4.zhimg.com/v2-2285958b555b349fac48224694a1f357_b.jpg)
+  ![image](https://pic2.zhimg.com/v2-6c516b920e708396a647526c74fafae1_b.jpg)
