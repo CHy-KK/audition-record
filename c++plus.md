@@ -120,6 +120,15 @@ unique_ptr包含两个类型参数，第一个是原生指针类型，一个是�
 
     初始化传入的原生指针或unique_ptr必须是一个临时变量或者通过move转化为右值，不能传入一个左值。赋值时也必须通过move转化为右值。
 
+## shared_ptr
+
+* __shared_ptr的线程安全问题__
+
+    问题发生原因很简单，比如两个线程中同时对一个shared_ptr引用计数++或--，导致实际只++或--了一次，就发生了引用计数错乱。所以在访问时需要加锁来保证对shared_ptr的引用是唯一的。
+
+* __weak_ptr__
+
+    weak_ptr是为了配合shared_ptr而引入的，其构造和析构不会引起shared_ptr引用计数的增减，可以解决shared_ptr的循环引用问题。
 
 # 3 callable对象
 
@@ -256,7 +265,7 @@ int main() {
 
 基础思路：线程池类的基本方法和成员包括：
 * 构造函数：初始化一个<font color="#dd0000)">线程列表</font>，每个线程在<font color="#dd0000)">任务队列</font>为空时阻塞，在<font color="#dd0000)">stop标志位</font>为false时阻塞。工作时会从任务队列中获取头部任务进行处理。
-* enqueue函数：外部需要执行的任务通过此函数加入<font color="#dd0000)">任务队列</font>，每个任务通过packaged_task进行包装，返回task的future对象。外部通过调用future.get()来获取结果。
+* enqueue函数：外部需要执行的任务通过此函数加入<font color="#dd0000)">任务队列</font>，每个任务通过packaged_task进行包装，返回task的<font color="#dd0000)">future对象</font>。外部通过调用future.get()来获取结果。
 * 析构函数：将<font color="#dd0000)">stop标志位</font>置为true，调用condition.notify_all()通知所有线程开始工作，然后将<font color="#dd0000)">线程列表</font>中的每个线程join。
 * <font color="#dd0000)">线程列表</font>：std::vector< std::thread > workers;
 * <font color="#dd0000)">任务队列</font>：std::queue< std::function<void()> > tasks;
@@ -265,3 +274,48 @@ int main() {
 * 控制变量<font color="#dd0000)">stop标志位</font>
 
 在程序最开始就预先分配好一个线程列表，然后在使用时将需要完成的任务作为callable对象传入线程池
+
+
+# 内存管理
+
+## 内存泄漏&内存池
+
+### 内存泄漏
+
+原因：调用了new/malloc，没有及时调用delete/malloc。然后导致系统失去了对这段内存的控制，程序无法自己使用这段内存，也无法将这段内存分配给其他程序。所以无法控制的内存越来越多就会导致可用内存减少，最终导致卡死。
+
+### 野指针
+
+野指针指的是指向不可用内存地址的指针，而非NULL指针，NULL指针很好判断也很好调试，而C++中无法判断一个指针保存的地址是否合法。野指针的出现可能有以下几个原因：
+1. 局部指针变量没有初始化
+2. 指针所指向的变量在指针之前被销毁、
+3. 使用已经释放过的指针（类似前一条）
+4. 进行了错误的指针运算，比如数组越界
+5. 进行了错误的强制类型转换
+
+因此在设计指针时需要遵循几条原则来避免野指针的发生：
+1. 绝不返回局部变量和局部数组的地址
+2. 任何变量必须要在定义之后初始化
+3. 字符数组必须确认0结束符后才能成为字符串
+4. 任何使用与内存操作相关的函数必须指定长度信息
+
+如果我们要检测定位野指针，目前只能使用一些工具进行检测：ASAN、lint、valgrind，asan+ubsan等等。
+
+
+
+### 内存池
+
+下面我们先来看看STL是如何使用内存池进行内存空间分配的：[揭秘——STL空间配置器](https://blog.csdn.net/LF_2016/article/details/53511648)
+```c++
+class Allocator {
+  union obj {
+    obj* next;
+    char data[1];
+  }
+private:
+  static obj* freelist[MAX_LENGTH];
+
+private:
+  static size_t _GetFreeListIndex(size_t bytes);  // 返回bytes大小对应
+}
+```

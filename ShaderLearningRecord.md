@@ -96,7 +96,9 @@
 
 * unity的剪裁空间y坐标是从上到下的，而不是传统的从下开始。所以在手动从统一设备坐标ndc转换到裁剪空间CS时，要将y坐标乘以-1w
 
-* 重建世界坐标的方式有两种，一个是直接把ndc空间转到CS下再用VP矩阵转到WS，还有一种是先用近平面上的像素坐标和camera位置求得屏幕射线，然后将深度值转换为线性深度Linear01Depth(rawDepth, _ZBufferParams)，用射线方向*线性深度得到世界坐标。
+* 重建世界坐标的方式有两种：
+  * 直接把ndc空间转到CS下再用VP矩阵转到WS。即使用float4(uv * 2 - 1, sampleDepth, 1)直接乘VP逆矩阵，然后用position.xyz/position.w。
+  * 先用近平面上的像素坐标和camera位置求得屏幕射线，然后将深度贴图采样深度值转换为线性深度Linear01Depth(rawDepth, _ZBufferParams)，用射线方向*线性深度得到世界坐标。
 
 
 

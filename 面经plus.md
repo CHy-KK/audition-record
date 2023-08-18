@@ -107,7 +107,7 @@ __从纹理角度来看减少drawcall__
 一次setpasscall只有设置渲染器参数的指令，并不包括纹理、顶点数据，只是由于setpasscall会导致纹理、顶点数据的切换，所以这里也放入消耗的内容，主要包含以下内容（以下内容按照数据量从大到小进行排序）:
 1. 消耗最大的是传递纹理，但是纹理并不一定需要每次都传，如果之前有材质用到过该纹理那么可以复用，或者传递一张包含多张纹理的巨大纹理（<font color="#dd0000">纹理加载发生在光栅化之后，fragment shader之前，所以其实不算在setpasscall的内容</font>，只是setpasscall一般发生在切换shader时，伴随着的可能要切换纹理，非常消耗性能）。
 2. 顶点数据：由于setpasscall会引发批次变化，所以我们当然需要传递顶点数据给GPU，但是相对纹理数据来说会小一些，具体传递的顶点数据包括：
-    * VBO（vertex buffer object）：所有的顶点属性，包括模型空间坐标、uv坐标、normal等等
+    * VBO（vertex buffer object）：所有的顶点属性，包括模型空间坐标、uv坐标、normal、gpuInstancing id等等
     * VertexAttribPointer：告诉OpenGL应该如何解析VBO，即每一个属性数据在一条顶点数据中的偏移量
     * EBO（element buffer object）：也叫IBO，即Index。如果没有EBO，VBO需要列出每一个三角形的顶点数据，如果有相邻三角形，那么就会出现三角形顶点重复，那么就VBO内就会有重复数据导致数据量过大。如果使用EBO，VBO中只需要存储不同的顶点数据，然后由EBO来解释每个三角形使用了哪一个顶点。
     * VAO（vertex array objecy）：包裹上面三个东西的结构。
@@ -324,9 +324,21 @@ https://zhuanlan.zhihu.com/p/393485253)
 
 * __几何着色器与曲面细分着色器__(https://roystan.net/articles/grass-shader/)
 
+  [在Unity中使用Tessellation - 异次元的归来的文章 - 知乎](https://zhuanlan.zhihu.com/p/542453747)
+
   几何着色器在曲面细分着色器(tessellation shader,包含两个可编程的着色器：hull shader和domain shader)之后（如果没有做曲面细分则是在vertex shader之后），在fragment shader之前（顺便光栅化在fragmen shader前一步执行）。
   
   几何着色器以一个图元为输入，输出一个或多个图元。要注意的是，由于一般vertex最后输出的是clipsapce下的坐标，然后fragment接受，所以理所当然的，geoshader输出的也应该是clipspace下坐标，记得做转换，同时将vertex的输出改为不做转换的坐标，其实就是将toclipspace延迟到了geoshader中做。
+
+  hull shader接受几何着色器输出的图元为输入，返回值为图元中的一个控制点，可以通过若干指令来控制输出控制点的信息。包括：输出控制点的数量（如果输入三角形图元那么就是3）、GPU细分三角形的方式、用哪个函数（patch constant function）来细分每个图元等等。
+  
+  patch constant function是人为定义的，接受一个图元为输入，输出一个叫TessellationFactors的结构， 该结构定义了三角形三条边的细分系数和三角形内部的细分系数。细分系数即一个图元需要被细分为几个新的图元。在grassshader中三角内部和边的细分细数是相等的，还不确定不等的情况是啥样的。
+
+  domain shader其实就是完成类似之前vertex shader做的事，会把新细分出来的顶点插值计算出顶点属性值，此处会引入重心坐标进行插值计算。
+
+  曲面细分的算法：[Games101笔记：曲面细分、简化 - 所以然的文章 - 知乎](https://zhuanlan.zhihu.com/p/382074891)
+
+  可以大致概括为：取图元边上中点（Catmull-Clark算法还会取图元平面中心点）然后连接出新的图元，在获得新图元之后，分别对细分出来的新顶点和原有顶点进行坐标的调整。一般来说顶点的度越大周围顶点的坐标值在调整中权重越大。
 
   几何着色器如何知道TriangleStream里的vertex是如何组成三角形的？答案是每个新的vertex将和前两个vertex组成三角形。如果需要更多三角形流（triangle strip），可以在TriangleStream中使用RestartStrip函数
   
@@ -399,6 +411,16 @@ OQ的全过程还是建议看文章，因为我没太搞明白，尝试简单概
 * 延迟光照
 
 * forward+
+
+  [Tile Base Render (Forward+) - 不知名书杯的文章 - 知乎](https://zhuanlan.zhihu.com/p/553907076)
+
+  先利用深度对tile内无关光源进行剔除，只对tile有影响的光源进行光照计算。大大降低了多光源的计算压力。主要分三个阶段：depth prepass、light culling、final shading。
+
+  ![image](images/forward%2B.jpg)
+
+  * depth prepass：深度贴图pass
+  * __light culling__：核心步骤。将屏幕划分为16*16的tile，在每个tile中寻找影响该tile的光源，形成一个light list，后续在计算该tile中的像素着色时只需要计算该tile的light list中的光源即可。light culling需要用compute shader进行计算，根据屏幕空间坐标和深度重建世界坐标我们可以得到每个tile对应的视锥体（其实一般在view space进行，不需要到世界坐标），然后会用compute shader使用depth map计算出一个tile中的最大和最小深度值，就可以构造出一个tile的实际视锥体了（类似一个包围盒），最后我们使用光源球体（即光源坐标以及光照半径构成的球体）与每个tile视锥体进行求交，如果有交就把该光源加入tile的light list（球体求交不用我说了吧）
+  * final shading：每个tile根据light list计算着色
 
 * 群组渲染
 
@@ -795,6 +817,8 @@ CPU阶段可能产生瓶颈的原因：过多的物体需要进行排序、空�
   * FXAA等使用模糊算法的抗锯齿就是基于后处理的方式了，FXAA
 
 * __GPU分支__
+
+[Shader中的 if 和分支 - YAO的文章 - 知乎](https://zhuanlan.zhihu.com/p/122467342)
 
   在shader中，如hlsl语句，如果使用条件分支语句，例如if，并不一定会产生分支。分支反应在汇编程序上也就是使用jmp、je、jne等跳转指令，跳转到分支语句地址执行指令。jmp为无条件指令，可以只修改IP（指令寄存器）也可以修改IP和CS（代码段寄存器），在进行分支跳转时，CPU会将跳转目标地址存入IP中，下一条要执行的指令将从IP中取出，这样就完成了指令跳转。
 
